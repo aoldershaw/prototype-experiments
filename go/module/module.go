@@ -12,16 +12,20 @@ type Module struct {
 	Path string `json:"module" prototype:"required"`
 }
 
-// LocateMainPackages returns the import paths to the packages that are "main"
+type Package struct {
+	Name       string
+	ImportPath string
+}
+
+// ResolvePackages returns the import paths to the packages that are "main"
 // packages, from the list of packages given. The list of packages can include
 // relative paths, the special "..." Go keyword, etc.
-func (m Module) LocateMainPackages(packages ...string) ([]string, error) {
+func (m Module) ResolvePackages(packages ...string) ([]Package, error) {
 	args := make([]string, 0, len(packages)+3)
 	args = append(args, "list", "-f", "{{.Name}}|{{.ImportPath}}")
 	args = append(args, packages...)
 
 	cmd := exec.Command("go", args...)
-	cmd.Dir = m.Path
 
 	output, err := m.Execute(cmd)
 	if err != nil {
@@ -29,7 +33,7 @@ func (m Module) LocateMainPackages(packages ...string) ([]string, error) {
 	}
 
 	lines := strings.Split(output, "\n")
-	results := make([]string, 0, len(lines))
+	results := make([]Package, 0, len(lines))
 	for _, line := range lines {
 		if line == "" {
 			continue
@@ -42,7 +46,10 @@ func (m Module) LocateMainPackages(packages ...string) ([]string, error) {
 		}
 
 		if parts[0] == "main" {
-			results = append(results, parts[1])
+			results = append(results, Package{
+				Name:       parts[0],
+				ImportPath: parts[1],
+			})
 		}
 	}
 

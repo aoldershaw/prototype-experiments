@@ -110,9 +110,16 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 	if len(params.Package) == 0 {
 		params.Package = OneOrMany{"."}
 	}
-	mainPkgs, err := mod.LocateMainPackages(params.Package...)
+	packages, err := mod.ResolvePackages(params.Package...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to locate packages: %w", err)
+	}
+
+	var mainPackages []string
+	for _, pkg := range packages {
+		if pkg.Name == "main" {
+			mainPackages = append(mainPackages, pkg.ImportPath)
+		}
 	}
 
 	platforms := params.Platforms()
@@ -121,7 +128,7 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 	if params.Parallelism > 0 {
 		parallelism = params.Parallelism
 	}
-	numBuildsTotal := len(mainPkgs) * len(platforms)
+	numBuildsTotal := len(mainPackages) * len(platforms)
 	if parallelism > numBuildsTotal {
 		parallelism = numBuildsTotal
 	}
@@ -140,7 +147,7 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 	}()
 
 	var wg sync.WaitGroup
-	for _, pkg := range mainPkgs {
+	for _, pkg := range mainPackages {
 		for _, platform := range platforms {
 			buildID := ID{Platform: platform, Package: pkg}
 
