@@ -44,6 +44,9 @@ type BuildParams struct {
 	Parallelism int `json:"parallelism"`
 }
 
+// Platforms returns the list of platforms defined in the build matrix. It
+// includes those platforms that were marked as skipped in SkipPlatforms, which
+// should be filtered out elsewhere.
 func (p BuildParams) Platforms() []Platform {
 	if len(p.OS) == 0 {
 		p.OS = OneOrMany{runtime.GOOS}
@@ -54,22 +57,10 @@ func (p BuildParams) Platforms() []Platform {
 	var platforms []Platform
 	for _, os := range p.OS {
 		for _, arch := range p.Arch {
-			platform := Platform{OS: os, Arch: arch}
-			if !containsPlatform(p.SkipPlatforms, platform) {
-				platforms = append(platforms, platform)
-			}
+			platforms = append(platforms, Platform{OS: os, Arch: arch})
 		}
 	}
 	return platforms
-}
-
-func containsPlatform(platforms []Platform, platform Platform) bool {
-	for _, p := range platforms {
-		if platform == p {
-			return true
-		}
-	}
-	return false
 }
 
 type OutputTemplateParams struct {
@@ -150,9 +141,19 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	var wg sync.WaitGroup
 	for _, pkg := range mainPkgs {
 		for _, platform := range platforms {
+			buildID := BuildID{Platform: platform, Package: pkg}
+
+			if containsPlatform(params.SkipPlatforms, platform) {
+				statusCh <- StatusUpdate{
+					BuildID: buildID,
+					Status:  "skipped",
+					Data:    "included in skip_platforms",
+				}
+				continue
+			}
+
 			wg.Add(1)
 			semaphore <- struct{}{}
-			buildID := BuildID{Platform: platform, Package: pkg}
 
 			statusCh <- StatusUpdate{
 				BuildID: buildID,

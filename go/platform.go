@@ -41,3 +41,12 @@ func (p *Platform) UnmarshalText(data []byte) error {
 func (p Platform) MarshalText() ([]byte, error) {
 	return json.Marshal(p.String())
 }
+
+func containsPlatform(platforms []Platform, platform Platform) bool {
+	for _, p := range platforms {
+		if platform == p {
+			return true
+		}
+	}
+	return false
+}
