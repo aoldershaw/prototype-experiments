@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -196,22 +197,10 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 				Cgo:      params.Cgo,
 			}
 			go func() {
-				defer wg.Done()
-				defer func() { <-semaphore }()
+				statusCh <- m.buildSingle(buildOptions)
 
-				err = m.buildSingle(buildOptions)
-				if err != nil {
-					statusCh <- StatusUpdate{
-						BuildID: buildID,
-						Status:  "error",
-						Data:    err.Error(),
-					}
-					return
-				}
-				statusCh <- StatusUpdate{
-					BuildID: buildID,
-					Status:  "success",
-				}
+				<-semaphore
+				wg.Done()
 			}()
 		}
 	}
@@ -229,7 +218,7 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	}}, nil
 }
 
-func (m Module) buildSingle(opts BuildOptions) error {
+func (m Module) buildSingle(opts BuildOptions) StatusUpdate {
 	cmd := exec.Command("go", "build", "-o", opts.Output)
 	if opts.Rebuild {
 		cmd.Args = append(cmd.Args, "-a")
@@ -267,5 +256,24 @@ func (m Module) buildSingle(opts BuildOptions) error {
 
 	cmd.Dir = m.Path
 	_, err := execute(cmd)
-	return err
+	if err != nil {
+		var execErr ExecutionError
+		if errors.As(err, &execErr) && strings.Contains(execErr.Stderr, "cmd/go: unsupported GOOS/GOARCH pair") {
+			return StatusUpdate{
+				BuildID: opts.BuildID,
+				Status:  "skipped",
+				Data:    "unsupported platform",
+			}
+		}
+
+		return StatusUpdate{
+			BuildID: opts.BuildID,
+			Status:  "error",
+			Data:    err.Error(),
+		}
+	}
+	return StatusUpdate{
+		BuildID: opts.BuildID,
+		Status:  "success",
+	}
 }

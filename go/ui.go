@@ -17,7 +17,6 @@ type BuildState struct {
 	Error     string
 	Line      int
 	StartTime time.Time
-	EndTime   time.Time
 }
 
 type UI struct {
@@ -40,12 +39,13 @@ func (ui *UI) Update(update StatusUpdate) {
 		state.StartTime = time.Now()
 		statusText = "\x1b[36mbuilding\x1b[0m"
 	case "success":
-		state.EndTime = time.Now()
-		statusText = fmt.Sprintf("\x1b[32mfinished\x1b[0m (%s)", state.EndTime.Sub(state.StartTime))
+		statusText = fmt.Sprintf("\x1b[32mfinished\x1b[0m (%s)", time.Since(state.StartTime))
 	case "error":
 		state.Error = update.Data
-		state.EndTime = time.Now()
-		statusText = fmt.Sprintf("\x1b[31merrored\x1b[0m  (%s)", state.EndTime.Sub(state.StartTime))
+		statusText = fmt.Sprintf("\x1b[31merrored\x1b[0m  (%s)", time.Since(state.StartTime))
+	case "skipped":
+		reason := update.Data
+		statusText = fmt.Sprintf("\x1b[33mskipped\x1b[0m  (%s)", reason)
 	}
 
 	ui.BuildStates[update.BuildID] = state

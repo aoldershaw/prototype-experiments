@@ -28,8 +28,9 @@ func (m Module) locateMainPackages(packages ...string) ([]string, error) {
 		return nil, err
 	}
 
-	results := make([]string, 0, len(output))
-	for _, line := range strings.Split(output, "\n") {
+	lines := strings.Split(output, "\n")
+	results := make([]string, 0, len(lines))
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}
@@ -53,9 +54,20 @@ func execute(cmd *exec.Cmd) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		err = fmt.Errorf("%w\n%s", err, stderr.String())
-		return "", err
+		return "", ExecutionError{
+			Err:    err,
+			Stderr: stderr.String(),
+		}
 	}
 
 	return stdout.String(), nil
+}
+
+type ExecutionError struct {
+	Err    error
+	Stderr string
+}
+
+func (e ExecutionError) Error() string {
+	return fmt.Sprintf("%s\n%s", e.Err, e.Stderr)
 }
