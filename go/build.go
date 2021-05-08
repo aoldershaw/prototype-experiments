@@ -14,6 +14,8 @@ import (
 	"github.com/aoldershaw/prototype-sdk-go"
 )
 
+const DefaultOutputTemplate = "{{.Dir}}-{{.OS}}-{{.Arch}}"
+
 type BuildParams struct {
 	Package OneOrMany `json:"package"`
 	OS      OneOrMany `json:"os"`
@@ -77,6 +79,7 @@ type OutputTemplateParams struct {
 
 type BuildOptions struct {
 	Package  string
+	Platform Platform
 	Output   string
 	Ldflags  string
 	Gcflags  string
@@ -99,12 +102,6 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	parallelism := 1
-	if params.Parallelism > 0 {
-		parallelism = params.Parallelism
-	}
-	semaphore := make(chan struct{}, parallelism)
-
 	var errsLock sync.Mutex
 	var errs []string
 	appendErr := func(platform Platform, err error) {
@@ -113,6 +110,9 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 		errs = append(errs, fmt.Sprintf("--> %15s error: %s\n", platform, err))
 	}
 
+	if params.OutputTemplate == "" {
+		params.OutputTemplate = DefaultOutputTemplate
+	}
 	outputTemplate, err := template.New("output").Parse(params.OutputTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("invalid output template: %w", err)
@@ -126,14 +126,28 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 		return nil, fmt.Errorf("failed to locate packages: %w", err)
 	}
 
-	var wg sync.WaitGroup
 	platforms := params.Platforms()
+
+	parallelism := 1
+	if params.Parallelism > 0 {
+		parallelism = params.Parallelism
+	}
+	numBuildsTotal := len(mainPkgs) * len(platforms)
+	if parallelism > numBuildsTotal {
+		parallelism = numBuildsTotal
+	}
+	fmt.Printf("running %d build(s) in parallel...\n\n", parallelism)
+	semaphore := make(chan struct{}, parallelism)
+
+	var wg sync.WaitGroup
 	for _, pkg := range mainPkgs {
 		for _, platform := range platforms {
 			wg.Add(1)
 			go func(platform Platform, pkg string) {
 				defer wg.Done()
+
 				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
 
 				fmt.Printf("--> %15s: %s\n", platform, pkg)
 
@@ -160,6 +174,7 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 
 				err = m.buildSingle(BuildOptions{
 					Package:  pkg,
+					Platform: platform,
 					Output:   filepath.Join(outputDirAbs, binaryName.String()),
 					Ldflags:  valueOrOverride(params.Ldflags, params.LdflagsOverrides),
 					Gcflags:  valueOrOverride(params.Gcflags, params.GcflagsOverrides),
@@ -175,6 +190,14 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 					return
 				}
 			}(platform, pkg)
+		}
+	}
+
+	wg.Wait()
+	if len(errs) > 0 {
+		fmt.Printf("\n%d errors occurred:\n\n", len(errs))
+		for _, err := range errs {
+			fmt.Println(err + "\n")
 		}
 	}
 
@@ -210,6 +233,11 @@ func (m Module) buildSingle(opts BuildOptions) error {
 	}
 	cmd.Args = append(cmd.Args, opts.Package)
 
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env,
+		"GOOS="+opts.Platform.OS,
+		"GOARCH="+opts.Platform.Arch,
+	)
 	if opts.Cgo {
 		cmd.Env = append(cmd.Env, "CGO_ENABLED=1")
 	} else {
