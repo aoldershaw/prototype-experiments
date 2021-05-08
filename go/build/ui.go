@@ -1,4 +1,4 @@
-package main
+package build
 
 import (
 	"fmt"
@@ -6,13 +6,13 @@ import (
 	"time"
 )
 
-type StatusUpdate struct {
-	BuildID
+type Status struct {
+	ID
 	Status string
 	Data   string
 }
 
-type BuildState struct {
+type State struct {
 	Status    string
 	Error     string
 	Line      int
@@ -20,40 +20,44 @@ type BuildState struct {
 }
 
 type UI struct {
-	BuildStates map[BuildID]BuildState
+	BuildStates map[ID]State
 	NumLines    int
 }
 
-func (ui *UI) Update(update StatusUpdate) {
-	state, ok := ui.BuildStates[update.BuildID]
+func NewUI() *UI {
+	return &UI{BuildStates: map[ID]State{}}
+}
+
+func (ui *UI) Update(status Status) {
+	state, ok := ui.BuildStates[status.ID]
 	if !ok {
 		state.Line = ui.NumLines
 		ui.NumLines++
-		fmt.Println(ui.buildLinePrefix(update.BuildID))
+		fmt.Println(ui.buildLinePrefix(status.ID))
 	}
-	state.Status = update.Status
+	state.Status = status.Status
 
 	var statusText string
-	switch update.Status {
+	switch status.Status {
 	case "start":
 		state.StartTime = time.Now()
 		statusText = "\x1b[36mbuilding\x1b[0m"
 	case "success":
 		statusText = fmt.Sprintf("\x1b[32mfinished\x1b[0m (%s)", time.Since(state.StartTime))
 	case "error":
-		state.Error = update.Data
+		state.Error = status.Data
 		statusText = fmt.Sprintf("\x1b[31merrored\x1b[0m  (%s)", time.Since(state.StartTime))
 	case "skipped":
-		reason := update.Data
+		reason := status.Data
 		statusText = fmt.Sprintf("\x1b[33mskipped\x1b[0m  (%s)", reason)
 	}
 
-	ui.BuildStates[update.BuildID] = state
+	ui.BuildStates[status.ID] = state
 
-	ui.setStatusText(update.BuildID, state.Line, statusText)
+	ui.setStatusText(status.ID, state.Line, statusText)
 }
 
-func (ui UI) setStatusText(buildID BuildID, line int, text string) {
+func (ui UI) setStatusText(buildID ID, line int, text string) {
 	// scroll to line
 	linesAway := ui.NumLines - line
 	fmt.Printf("\x1b[%dA", linesAway)
@@ -72,21 +76,21 @@ func (ui UI) setStatusText(buildID BuildID, line int, text string) {
 	fmt.Printf("\x1b[%dB\r", linesAway)
 }
 
-func (ui UI) buildLinePrefix(buildID BuildID) string {
+func (ui UI) buildLinePrefix(buildID ID) string {
 	return fmt.Sprintf("--> %15s: %s ... ", buildID.Platform, buildID.Package)
 }
 
 func (ui UI) PrintResult() {
 	type BuildError struct {
-		BuildID
+		ID
 		Error string
 	}
 	var buildErrors []BuildError
 	for buildID, state := range ui.BuildStates {
 		if state.Status == "error" {
 			buildErrors = append(buildErrors, BuildError{
-				BuildID: buildID,
-				Error:   state.Error,
+				ID:    buildID,
+				Error: state.Error,
 			})
 		}
 	}
@@ -103,7 +107,7 @@ func (ui UI) PrintResult() {
 
 	// Sort by line so that errors appear in same order as builds
 	sort.Slice(buildErrors, func(i, j int) bool {
-		return ui.BuildStates[buildErrors[i].BuildID].Line < ui.BuildStates[buildErrors[i].BuildID].Line
+		return ui.BuildStates[buildErrors[i].ID].Line < ui.BuildStates[buildErrors[i].ID].Line
 	})
 
 	for _, err := range buildErrors {

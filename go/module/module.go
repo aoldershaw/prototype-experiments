@@ -1,4 +1,4 @@
-package main
+package module
 
 import (
 	"bytes"
@@ -12,10 +12,10 @@ type Module struct {
 	Path string `json:"module" prototype:"required"`
 }
 
-// locateMainPackages returns the import paths to the packages that are "main"
+// LocateMainPackages returns the import paths to the packages that are "main"
 // packages, from the list of packages given. The list of packages can include
 // relative paths, the special "..." Go keyword, etc.
-func (m Module) locateMainPackages(packages ...string) ([]string, error) {
+func (m Module) LocateMainPackages(packages ...string) ([]string, error) {
 	args := make([]string, 0, len(packages)+3)
 	args = append(args, "list", "-f", "{{.Name}}|{{.ImportPath}}")
 	args = append(args, packages...)
@@ -23,7 +23,7 @@ func (m Module) locateMainPackages(packages ...string) ([]string, error) {
 	cmd := exec.Command("go", args...)
 	cmd.Dir = m.Path
 
-	output, err := execute(cmd)
+	output, err := m.Execute(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -49,10 +49,12 @@ func (m Module) locateMainPackages(packages ...string) ([]string, error) {
 	return results, nil
 }
 
-func execute(cmd *exec.Cmd) (string, error) {
+func (m Module) Execute(cmd *exec.Cmd) (string, error) {
 	var stderr, stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.Dir = m.Path
+
 	if err := cmd.Run(); err != nil {
 		return "", ExecutionError{
 			Err:    err,

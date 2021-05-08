@@ -1,4 +1,4 @@
-package main
+package build
 
 import (
 	"bytes"
@@ -12,12 +12,13 @@ import (
 	"sync"
 	"text/template"
 
+	"github.com/aoldershaw/prototype-experiments/go/module"
 	"github.com/aoldershaw/prototype-sdk-go"
 )
 
 const DefaultOutputTemplate = "{{.Dir}}-{{.OS}}-{{.Arch}}"
 
-type BuildParams struct {
+type Params struct {
 	Package OneOrMany `json:"package"`
 	OS      OneOrMany `json:"os"`
 	Arch    OneOrMany `json:"arch"`
@@ -47,7 +48,7 @@ type BuildParams struct {
 // Platforms returns the list of platforms defined in the build matrix. It
 // includes those platforms that were marked as skipped in SkipPlatforms, which
 // should be filtered out elsewhere.
-func (p BuildParams) Platforms() []Platform {
+func (p Params) Platforms() []Platform {
 	if len(p.OS) == 0 {
 		p.OS = OneOrMany{runtime.GOOS}
 	}
@@ -69,13 +70,13 @@ type OutputTemplateParams struct {
 	Arch string
 }
 
-type BuildID struct {
+type ID struct {
 	Platform Platform
 	Package  string
 }
 
-type BuildOptions struct {
-	BuildID
+type Options struct {
+	ID
 	Output   string
 	Ldflags  string
 	Gcflags  string
@@ -87,7 +88,7 @@ type BuildOptions struct {
 	Cgo      bool
 }
 
-func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
+func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error) {
 	outputDirRel := "./output"
 	outputDirAbs, err := filepath.Abs(outputDirRel)
 	if err != nil {
@@ -109,7 +110,7 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	if len(params.Package) == 0 {
 		params.Package = OneOrMany{"."}
 	}
-	mainPkgs, err := m.locateMainPackages(params.Package...)
+	mainPkgs, err := mod.LocateMainPackages(params.Package...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to locate packages: %w", err)
 	}
@@ -127,8 +128,8 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	fmt.Printf("running %d build(s) in parallel...\n\n", parallelism)
 	semaphore := make(chan struct{}, parallelism)
 
-	statusCh := make(chan StatusUpdate, 1)
-	ui := &UI{BuildStates: make(map[BuildID]BuildState)}
+	statusCh := make(chan Status, 1)
+	ui := NewUI()
 
 	uiDone := make(chan struct{})
 	go func() {
@@ -141,13 +142,13 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	var wg sync.WaitGroup
 	for _, pkg := range mainPkgs {
 		for _, platform := range platforms {
-			buildID := BuildID{Platform: platform, Package: pkg}
+			buildID := ID{Platform: platform, Package: pkg}
 
 			if containsPlatform(params.SkipPlatforms, platform) {
-				statusCh <- StatusUpdate{
-					BuildID: buildID,
-					Status:  "skipped",
-					Data:    "included in skip_platforms",
+				statusCh <- Status{
+					ID:     buildID,
+					Status: "skipped",
+					Data:   "included in skip_platforms",
 				}
 				continue
 			}
@@ -155,9 +156,9 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 			wg.Add(1)
 			semaphore <- struct{}{}
 
-			statusCh <- StatusUpdate{
-				BuildID: buildID,
-				Status:  "start",
+			statusCh <- Status{
+				ID:     buildID,
+				Status: "start",
 			}
 
 			valueOrOverride := func(value string, overrides map[Platform]string) string {
@@ -174,10 +175,10 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 				Arch: platform.Arch,
 			})
 			if err != nil {
-				statusCh <- StatusUpdate{
-					BuildID: buildID,
-					Status:  "error",
-					Data:    err.Error(),
+				statusCh <- Status{
+					ID:     buildID,
+					Status: "error",
+					Data:   err.Error(),
 				}
 				<-semaphore
 				continue
@@ -185,8 +186,8 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 			if platform.OS == "windows" {
 				binaryName.WriteString(".exe")
 			}
-			buildOptions := BuildOptions{
-				BuildID:  buildID,
+			buildOptions := Options{
+				ID:       buildID,
 				Output:   filepath.Join(outputDirAbs, binaryName.String()),
 				Ldflags:  valueOrOverride(params.Ldflags, params.PlatformLdflags),
 				Gcflags:  valueOrOverride(params.Gcflags, params.PlatformGcflags),
@@ -198,7 +199,7 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 				Cgo:      params.Cgo,
 			}
 			go func() {
-				statusCh <- m.buildSingle(buildOptions)
+				statusCh <- buildSingle(mod, buildOptions)
 
 				<-semaphore
 				wg.Done()
@@ -219,7 +220,7 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	}}, nil
 }
 
-func (m Module) buildSingle(opts BuildOptions) StatusUpdate {
+func buildSingle(mod module.Module, opts Options) Status {
 	cmd := exec.Command("go", "build", "-o", opts.Output)
 	if opts.Rebuild {
 		cmd.Args = append(cmd.Args, "-a")
@@ -255,26 +256,25 @@ func (m Module) buildSingle(opts BuildOptions) StatusUpdate {
 		cmd.Env = append(cmd.Env, "CGO_ENABLED=0")
 	}
 
-	cmd.Dir = m.Path
-	_, err := execute(cmd)
+	_, err := mod.Execute(cmd)
 	if err != nil {
-		var execErr ExecutionError
+		var execErr module.ExecutionError
 		if errors.As(err, &execErr) && strings.Contains(execErr.Stderr, "cmd/go: unsupported GOOS/GOARCH pair") {
-			return StatusUpdate{
-				BuildID: opts.BuildID,
-				Status:  "skipped",
-				Data:    "unsupported platform",
+			return Status{
+				ID:     opts.ID,
+				Status: "skipped",
+				Data:   "unsupported platform",
 			}
 		}
 
-		return StatusUpdate{
-			BuildID: opts.BuildID,
-			Status:  "error",
-			Data:    err.Error(),
+		return Status{
+			ID:     opts.ID,
+			Status: "error",
+			Data:   err.Error(),
 		}
 	}
-	return StatusUpdate{
-		BuildID: opts.BuildID,
-		Status:  "success",
+	return Status{
+		ID:     opts.ID,
+		Status: "success",
 	}
 }
