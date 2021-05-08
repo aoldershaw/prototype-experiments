@@ -95,7 +95,11 @@ func (ui UI) PrintResult() {
 		return
 	}
 
-	fmt.Printf("\n%d errors occurred:\n\n", len(buildErrors))
+	errorsWord := "errors"
+	if len(buildErrors) == 1 {
+		errorsWord = "error"
+	}
+	fmt.Printf("\n\x1b[1m%d %s occurred:\x1b[0m\n\n", len(buildErrors), errorsWord)
 
 	// Sort by line so that errors appear in same order as builds
 	sort.Slice(buildErrors, func(i, j int) bool {
@@ -103,6 +107,6 @@ func (ui UI) PrintResult() {
 	})
 
 	for _, err := range buildErrors {
-		fmt.Printf("--> %15s: %s errored: %s\n\n", err.Platform, err.Package, err.Error)
+		fmt.Printf("--> %15s: %s: %s\n\n", err.Platform, err.Package, err.Error)
 	}
 }
