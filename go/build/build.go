@@ -88,7 +88,12 @@ type Options struct {
 	Cgo      bool
 }
 
-func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error) {
+type Module interface {
+	Execute(*exec.Cmd) error
+	ResolvePackages(packages ...string) ([]module.Package, error)
+}
+
+func Build(mod Module, params Params) ([]prototype.MessageResponse, error) {
 	outputDirRel := "./output"
 	outputDirAbs, err := filepath.Abs(outputDirRel)
 	if err != nil {
@@ -99,12 +104,40 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
+	ui := NewUI()
+	uiDone := make(chan struct{})
+	statusCh := make(chan Status, 1)
+
+	go func() {
+		for update := range statusCh {
+			ui.Update(update)
+		}
+		close(uiDone)
+	}()
+
+	if err := build(mod, params, outputDirAbs, statusCh); err != nil {
+		return nil, err
+	}
+
+	close(statusCh)
+	<-uiDone
+
+	ui.PrintResult()
+
+	return []prototype.MessageResponse{{
+		Object: map[string]interface{}{
+			"built": prototype.Artifact(outputDirRel),
+		},
+	}}, nil
+}
+
+func build(mod Module, params Params, outputDir string, statusCh chan<- Status) error {
 	if params.OutputTemplate == "" {
 		params.OutputTemplate = DefaultOutputTemplate
 	}
 	outputTemplate, err := template.New("output").Parse(params.OutputTemplate)
 	if err != nil {
-		return nil, fmt.Errorf("invalid output template: %w", err)
+		return fmt.Errorf("invalid output template: %w", err)
 	}
 
 	if len(params.Package) == 0 {
@@ -112,7 +145,7 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 	}
 	packages, err := mod.ResolvePackages(params.Package...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to locate packages: %w", err)
+		return fmt.Errorf("failed to locate packages: %w", err)
 	}
 
 	var mainPackages []string
@@ -134,17 +167,6 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 	}
 	fmt.Printf("running %d build(s) in parallel...\n\n", parallelism)
 	semaphore := make(chan struct{}, parallelism)
-
-	statusCh := make(chan Status, 1)
-	ui := NewUI()
-
-	uiDone := make(chan struct{})
-	go func() {
-		for update := range statusCh {
-			ui.Update(update)
-		}
-		close(uiDone)
-	}()
 
 	var wg sync.WaitGroup
 	for _, pkg := range mainPackages {
@@ -195,7 +217,7 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 			}
 			buildOptions := Options{
 				ID:       buildID,
-				Output:   filepath.Join(outputDirAbs, binaryName.String()),
+				Output:   filepath.Join(outputDir, binaryName.String()),
 				Ldflags:  valueOrOverride(params.Ldflags, params.PlatformLdflags),
 				Gcflags:  valueOrOverride(params.Gcflags, params.PlatformGcflags),
 				Asmflags: valueOrOverride(params.Asmflags, params.PlatformAsmflags),
@@ -213,21 +235,11 @@ func Build(mod module.Module, params Params) ([]prototype.MessageResponse, error
 			}()
 		}
 	}
-
 	wg.Wait()
-	close(statusCh)
-	<-uiDone
-
-	ui.PrintResult()
-
-	return []prototype.MessageResponse{{
-		Object: map[string]interface{}{
-			"built": prototype.Artifact(outputDirRel),
-		},
-	}}, nil
+	return nil
 }
 
-func buildSingle(mod module.Module, opts Options) Status {
+func buildSingle(mod Module, opts Options) Status {
 	cmd := exec.Command("go", "build", "-o", opts.Output)
 	if opts.Rebuild {
 		cmd.Args = append(cmd.Args, "-a")
@@ -252,18 +264,19 @@ func buildSingle(mod module.Module, opts Options) Status {
 	}
 	cmd.Args = append(cmd.Args, opts.Package)
 
-	cmd.Env = os.Environ()
-	cmd.Env = append(cmd.Env,
-		"GOOS="+opts.Platform.OS,
-		"GOARCH="+opts.Platform.Arch,
-	)
+	cmd.Env = []string{
+		"GOPATH=" + os.Getenv("GOPATH"),
+		"GOROOT=" + os.Getenv("GOROOT"),
+		"GOOS=" + opts.Platform.OS,
+		"GOARCH=" + opts.Platform.Arch,
+	}
 	if opts.Cgo {
 		cmd.Env = append(cmd.Env, "CGO_ENABLED=1")
 	} else {
 		cmd.Env = append(cmd.Env, "CGO_ENABLED=0")
 	}
 
-	_, err := mod.Execute(cmd)
+	err := mod.Execute(cmd)
 	if err != nil {
 		var execErr module.ExecutionError
 		if errors.As(err, &execErr) && strings.Contains(execErr.Stderr, "cmd/go: unsupported GOOS/GOARCH pair") {

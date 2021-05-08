@@ -25,14 +25,16 @@ func (m Module) ResolvePackages(packages ...string) ([]Package, error) {
 	args = append(args, "list", "-f", "{{.Name}}|{{.ImportPath}}")
 	args = append(args, packages...)
 
+	var buf bytes.Buffer
 	cmd := exec.Command("go", args...)
+	cmd.Stdout = &buf
 
-	output, err := m.Execute(cmd)
+	err := m.Execute(cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	lines := strings.Split(output, "\n")
+	lines := strings.Split(buf.String(), "\n")
 	results := make([]Package, 0, len(lines))
 	for _, line := range lines {
 		if line == "" {
@@ -56,25 +58,28 @@ func (m Module) ResolvePackages(packages ...string) ([]Package, error) {
 	return results, nil
 }
 
-func (m Module) Execute(cmd *exec.Cmd) (string, error) {
-	var stderr, stdout bytes.Buffer
-	cmd.Stdout = &stdout
+func (m Module) Execute(cmd *exec.Cmd) error {
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.Dir = m.Path
 
 	if err := cmd.Run(); err != nil {
-		return "", ExecutionError{
+		return ExecutionError{
 			Err:    err,
 			Stderr: stderr.String(),
 		}
 	}
 
-	return stdout.String(), nil
+	return nil
 }
 
 type ExecutionError struct {
 	Err    error
 	Stderr string
+}
+
+func (e ExecutionError) Unwrap() error {
+	return e.Err
 }
 
 func (e ExecutionError) Error() string {
