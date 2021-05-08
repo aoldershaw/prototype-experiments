@@ -77,9 +77,13 @@ type OutputTemplateParams struct {
 	Arch string
 }
 
-type BuildOptions struct {
-	Package  string
+type BuildID struct {
 	Platform Platform
+	Package  string
+}
+
+type BuildOptions struct {
+	BuildID
 	Output   string
 	Ldflags  string
 	Gcflags  string
@@ -102,13 +106,8 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	var errsLock sync.Mutex
-	var errs []string
-	appendErr := func(platform Platform, err error) {
-		errsLock.Lock()
-		defer errsLock.Unlock()
-		errs = append(errs, fmt.Sprintf("--> %15s error: %s\n", platform, err))
-	}
+	statusCh := make(chan StatusUpdate, 1)
+	ui := &UI{BuildStates: make(map[BuildID]BuildState)}
 
 	if params.OutputTemplate == "" {
 		params.OutputTemplate = DefaultOutputTemplate
@@ -149,7 +148,12 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 				semaphore <- struct{}{}
 				defer func() { <-semaphore }()
 
-				fmt.Printf("--> %15s: %s\n", platform, pkg)
+				buildID := BuildID{Platform: platform, Package: pkg}
+
+				statusCh <- StatusUpdate{
+					BuildID: buildID,
+					Status:  "start",
+				}
 
 				valueOrOverride := func(value string, overrides map[Platform]string) string {
 					if override, ok := overrides[platform]; ok {
@@ -165,7 +169,11 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 					Arch: platform.Arch,
 				})
 				if err != nil {
-					appendErr(platform, err)
+					statusCh <- StatusUpdate{
+						BuildID: buildID,
+						Status:  "error",
+						Data:    err.Error(),
+					}
 					return
 				}
 				if platform.OS == "windows" {
@@ -173,8 +181,7 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 				}
 
 				err = m.buildSingle(BuildOptions{
-					Package:  pkg,
-					Platform: platform,
+					BuildID:  buildID,
 					Output:   filepath.Join(outputDirAbs, binaryName.String()),
 					Ldflags:  valueOrOverride(params.Ldflags, params.LdflagsOverrides),
 					Gcflags:  valueOrOverride(params.Gcflags, params.GcflagsOverrides),
@@ -186,20 +193,34 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 					Cgo:      params.Cgo,
 				})
 				if err != nil {
-					appendErr(platform, err)
+					statusCh <- StatusUpdate{
+						BuildID: buildID,
+						Status:  "error",
+						Data:    err.Error(),
+					}
 					return
+				}
+				statusCh <- StatusUpdate{
+					BuildID: buildID,
+					Status:  "success",
 				}
 			}(platform, pkg)
 		}
 	}
 
-	wg.Wait()
-	if len(errs) > 0 {
-		fmt.Printf("\n%d errors occurred:\n\n", len(errs))
-		for _, err := range errs {
-			fmt.Println(err + "\n")
+	uiDone := make(chan struct{})
+	go func() {
+		for update := range statusCh {
+			ui.Update(update)
 		}
-	}
+		close(uiDone)
+	}()
+
+	wg.Wait()
+	close(statusCh)
+	<-uiDone
+
+	ui.PrintResult()
 
 	return []prototype.MessageResponse{{
 		Object: map[string]interface{}{
