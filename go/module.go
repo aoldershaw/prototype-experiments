@@ -53,7 +53,7 @@ func execute(cmd *exec.Cmd) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		err = fmt.Errorf("%w\nStderr: %s", err, stderr.String())
+		err = fmt.Errorf("%w\n%s", err, stderr.String())
 		return "", err
 	}
 

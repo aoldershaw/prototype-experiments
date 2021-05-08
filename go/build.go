@@ -25,14 +25,14 @@ type BuildParams struct {
 
 	OutputTemplate string `json:"output_template"`
 
-	Ldflags          string              `json:"ldflags"`
-	LdflagsOverrides map[Platform]string `json:"ldflags_overrides"`
+	Ldflags         string              `json:"ldflags"`
+	PlatformLdflags map[Platform]string `json:"platform_ldflags"`
 
-	Gcflags          string              `json:"gcflags"`
-	GcflagsOverrides map[Platform]string `json:"gcflags_overrides"`
+	Gcflags         string              `json:"gcflags"`
+	PlatformGcflags map[Platform]string `json:"platform_gcflags"`
 
-	Asmflags          string              `json:"asmflags"`
-	AsmflagsOverrides map[Platform]string `json:"asmflags_overrides"`
+	Asmflags         string              `json:"asmflags"`
+	PlatformAsmflags map[Platform]string `json:"platform_asmflags"`
 
 	Tags    []string `json:"tags"`
 	ModMode string   `json:"mod"`
@@ -106,9 +106,6 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	statusCh := make(chan StatusUpdate, 1)
-	ui := &UI{BuildStates: make(map[BuildID]BuildState)}
-
 	if params.OutputTemplate == "" {
 		params.OutputTemplate = DefaultOutputTemplate
 	}
@@ -138,60 +135,71 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 	fmt.Printf("running %d build(s) in parallel...\n\n", parallelism)
 	semaphore := make(chan struct{}, parallelism)
 
+	statusCh := make(chan StatusUpdate, 1)
+	ui := &UI{BuildStates: make(map[BuildID]BuildState)}
+
+	uiDone := make(chan struct{})
+	go func() {
+		for update := range statusCh {
+			ui.Update(update)
+		}
+		close(uiDone)
+	}()
+
 	var wg sync.WaitGroup
 	for _, pkg := range mainPkgs {
 		for _, platform := range platforms {
 			wg.Add(1)
-			go func(platform Platform, pkg string) {
-				defer wg.Done()
+			semaphore <- struct{}{}
+			buildID := BuildID{Platform: platform, Package: pkg}
 
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
+			statusCh <- StatusUpdate{
+				BuildID: buildID,
+				Status:  "start",
+			}
 
-				buildID := BuildID{Platform: platform, Package: pkg}
+			valueOrOverride := func(value string, overrides map[Platform]string) string {
+				if override, ok := overrides[platform]; ok {
+					return override
+				}
+				return value
+			}
 
+			binaryName := new(bytes.Buffer)
+			err := outputTemplate.Execute(binaryName, OutputTemplateParams{
+				Dir:  filepath.Base(pkg),
+				OS:   platform.OS,
+				Arch: platform.Arch,
+			})
+			if err != nil {
 				statusCh <- StatusUpdate{
 					BuildID: buildID,
-					Status:  "start",
+					Status:  "error",
+					Data:    err.Error(),
 				}
+				<-semaphore
+				continue
+			}
+			if platform.OS == "windows" {
+				binaryName.WriteString(".exe")
+			}
+			buildOptions := BuildOptions{
+				BuildID:  buildID,
+				Output:   filepath.Join(outputDirAbs, binaryName.String()),
+				Ldflags:  valueOrOverride(params.Ldflags, params.PlatformLdflags),
+				Gcflags:  valueOrOverride(params.Gcflags, params.PlatformGcflags),
+				Asmflags: valueOrOverride(params.Asmflags, params.PlatformAsmflags),
+				Tags:     params.Tags,
+				ModMode:  params.ModMode,
+				Rebuild:  params.Rebuild,
+				Race:     params.Race,
+				Cgo:      params.Cgo,
+			}
+			go func() {
+				defer wg.Done()
+				defer func() { <-semaphore }()
 
-				valueOrOverride := func(value string, overrides map[Platform]string) string {
-					if override, ok := overrides[platform]; ok {
-						return override
-					}
-					return value
-				}
-
-				binaryName := new(bytes.Buffer)
-				err := outputTemplate.Execute(binaryName, OutputTemplateParams{
-					Dir:  filepath.Base(pkg),
-					OS:   platform.OS,
-					Arch: platform.Arch,
-				})
-				if err != nil {
-					statusCh <- StatusUpdate{
-						BuildID: buildID,
-						Status:  "error",
-						Data:    err.Error(),
-					}
-					return
-				}
-				if platform.OS == "windows" {
-					binaryName.WriteString(".exe")
-				}
-
-				err = m.buildSingle(BuildOptions{
-					BuildID:  buildID,
-					Output:   filepath.Join(outputDirAbs, binaryName.String()),
-					Ldflags:  valueOrOverride(params.Ldflags, params.LdflagsOverrides),
-					Gcflags:  valueOrOverride(params.Gcflags, params.GcflagsOverrides),
-					Asmflags: valueOrOverride(params.Asmflags, params.AsmflagsOverrides),
-					Tags:     params.Tags,
-					ModMode:  params.ModMode,
-					Rebuild:  params.Rebuild,
-					Race:     params.Race,
-					Cgo:      params.Cgo,
-				})
+				err = m.buildSingle(buildOptions)
 				if err != nil {
 					statusCh <- StatusUpdate{
 						BuildID: buildID,
@@ -204,17 +212,9 @@ func (m Module) Build(params BuildParams) ([]prototype.MessageResponse, error) {
 					BuildID: buildID,
 					Status:  "success",
 				}
-			}(platform, pkg)
+			}()
 		}
 	}
-
-	uiDone := make(chan struct{})
-	go func() {
-		for update := range statusCh {
-			ui.Update(update)
-		}
-		close(uiDone)
-	}()
 
 	wg.Wait()
 	close(statusCh)
