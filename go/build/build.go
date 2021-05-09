@@ -78,6 +78,7 @@ type ID struct {
 type Options struct {
 	ID
 	Output   string
+	Gopath   string
 	Ldflags  string
 	Gcflags  string
 	Asmflags string
@@ -94,14 +95,16 @@ type Module interface {
 }
 
 func Build(mod Module, params Params) ([]prototype.MessageResponse, error) {
-	outputDirRel := "./output"
-	outputDirAbs, err := filepath.Abs(outputDirRel)
-	if err != nil {
-		return nil, fmt.Errorf("determine absolute path to output dir: %w", err)
-	}
-	err = os.MkdirAll(outputDirAbs, 0755)
+	outputDir := "./output"
+	err := os.MkdirAll(outputDir, 0755)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	gopathDir := "./gopath"
+	err = os.MkdirAll(gopathDir, 0755)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gopath directory: %w", err)
 	}
 
 	ui := NewUI()
@@ -115,7 +118,7 @@ func Build(mod Module, params Params) ([]prototype.MessageResponse, error) {
 		close(uiDone)
 	}()
 
-	if err := build(mod, params, outputDirAbs, statusCh); err != nil {
+	if err := build(mod, params, outputDir, gopathDir, statusCh); err != nil {
 		return nil, err
 	}
 
@@ -126,12 +129,23 @@ func Build(mod Module, params Params) ([]prototype.MessageResponse, error) {
 
 	return []prototype.MessageResponse{{
 		Object: map[string]interface{}{
-			"built": prototype.Artifact(outputDirRel),
+			"built":  prototype.Artifact(outputDir),
+			"gopath": prototype.Artifact(gopathDir),
 		},
 	}}, nil
 }
 
-func build(mod Module, params Params, outputDir string, statusCh chan<- Status) error {
+func build(mod Module, params Params, outputDir, gopathDir string, statusCh chan<- Status) error {
+	// get absolute paths since go command runs in a different directory
+	outputDir, err := filepath.Abs(outputDir)
+	if err != nil {
+		return fmt.Errorf("get absolute path: %w", err)
+	}
+	gopathDir, err = filepath.Abs(gopathDir)
+	if err != nil {
+		return fmt.Errorf("get absolute path: %w", err)
+	}
+
 	if params.OutputTemplate == "" {
 		params.OutputTemplate = DefaultOutputTemplate
 	}
@@ -218,6 +232,7 @@ func build(mod Module, params Params, outputDir string, statusCh chan<- Status) 
 			buildOptions := Options{
 				ID:       buildID,
 				Output:   filepath.Join(outputDir, binaryName.String()),
+				Gopath:   gopathDir,
 				Ldflags:  valueOrOverride(params.Ldflags, params.PlatformLdflags),
 				Gcflags:  valueOrOverride(params.Gcflags, params.PlatformGcflags),
 				Asmflags: valueOrOverride(params.Asmflags, params.PlatformAsmflags),
@@ -265,7 +280,8 @@ func buildSingle(mod Module, opts Options) Status {
 	cmd.Args = append(cmd.Args, opts.Package)
 
 	cmd.Env = []string{
-		"GOPATH=" + os.Getenv("GOPATH"),
+		"GOPATH=" + opts.Gopath,
+		"GOCACHE=" + filepath.Join(opts.Gopath, "cache"),
 		"GOOS=" + opts.Platform.OS,
 		"GOARCH=" + opts.Platform.Arch,
 	}
