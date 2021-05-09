@@ -266,7 +266,6 @@ func buildSingle(mod Module, opts Options) Status {
 
 	cmd.Env = []string{
 		"GOPATH=" + os.Getenv("GOPATH"),
-		"GOROOT=" + os.Getenv("GOROOT"),
 		"GOOS=" + opts.Platform.OS,
 		"GOARCH=" + opts.Platform.Arch,
 	}
