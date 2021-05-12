@@ -18,6 +18,11 @@ import (
 
 const DefaultOutputTemplate = "{{.Dir}}-{{.OS}}-{{.Arch}}"
 
+var DefaultPlatform = Platform{
+	OS:   runtime.GOOS,
+	Arch: runtime.GOARCH,
+}
+
 type Params struct {
 	Package OneOrMany `json:"package"`
 	OS      OneOrMany `json:"os"`
@@ -50,10 +55,10 @@ type Params struct {
 // should be filtered out elsewhere.
 func (p Params) Platforms() []Platform {
 	if len(p.OS) == 0 {
-		p.OS = OneOrMany{runtime.GOOS}
+		p.OS = OneOrMany{DefaultPlatform.OS}
 	}
 	if len(p.Arch) == 0 {
-		p.Arch = OneOrMany{runtime.GOARCH}
+		p.Arch = OneOrMany{DefaultPlatform.Arch}
 	}
 	var platforms []Platform
 	for _, os := range p.OS {

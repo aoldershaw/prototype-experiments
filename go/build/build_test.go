@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/aoldershaw/prototype-experiments/go/module"
@@ -44,6 +43,7 @@ func (m *fakeModule) Execute(cmd *exec.Cmd) error {
 func TestBuild(t *testing.T) {
 	const outputDir = "/output"
 	const gopathDir = "/gopath"
+
 	env := func(goos, goarch, cgo string) []string {
 		return []string{
 			"GOPATH=" + gopathDir,
@@ -53,6 +53,12 @@ func TestBuild(t *testing.T) {
 			"CGO_ENABLED=" + cgo,
 		}
 	}
+
+	DefaultPlatform = Platform{
+		OS:   "linux",
+		Arch: "amd64",
+	}
+
 	for _, tt := range []struct {
 		desc     string
 		packages map[string][]module.Package
@@ -70,11 +76,10 @@ func TestBuild(t *testing.T) {
 				{
 					Args: []string{
 						"go", "build",
-						// TODO: this'll break on windows (needs .exe)
-						"-o", filepath.Join(outputDir, "concourse-"+runtime.GOOS+"-"+runtime.GOARCH),
+						"-o", filepath.Join(outputDir, "concourse-linux-amd64"),
 						"github.com/concourse/concourse/cmd/concourse",
 					},
-					Env: env(runtime.GOOS, runtime.GOARCH, "0"),
+					Env: env("linux", "amd64", "0"),
 				},
 			},
 		},
@@ -98,29 +103,26 @@ func TestBuild(t *testing.T) {
 				{
 					Args: []string{
 						"go", "build",
-						// TODO: this'll break on windows (needs .exe)
-						"-o", filepath.Join(outputDir, "foo-"+runtime.GOOS+"-"+runtime.GOARCH),
+						"-o", filepath.Join(outputDir, "foo-linux-amd64"),
 						"github.com/abc/def/foo",
 					},
-					Env: env(runtime.GOOS, runtime.GOARCH, "0"),
+					Env: env("linux", "amd64", "0"),
 				},
 				{
 					Args: []string{
 						"go", "build",
-						// TODO: this'll break on windows (needs .exe)
-						"-o", filepath.Join(outputDir, "other-"+runtime.GOOS+"-"+runtime.GOARCH),
+						"-o", filepath.Join(outputDir, "other-linux-amd64"),
 						"github.com/abc/def/foo/other",
 					},
-					Env: env(runtime.GOOS, runtime.GOARCH, "0"),
+					Env: env("linux", "amd64", "0"),
 				},
 				{
 					Args: []string{
 						"go", "build",
-						// TODO: this'll break on windows (needs .exe)
-						"-o", filepath.Join(outputDir, "bar-"+runtime.GOOS+"-"+runtime.GOARCH),
+						"-o", filepath.Join(outputDir, "bar-linux-amd64"),
 						"github.com/abc/def/bar/bar",
 					},
-					Env: env(runtime.GOOS, runtime.GOARCH, "0"),
+					Env: env("linux", "amd64", "0"),
 				},
 			},
 		},
