@@ -48,6 +48,9 @@ type Params struct {
 	Cgo     bool     `json:"cgo"`
 
 	Parallelism int `json:"parallelism"`
+
+	Archive   bool `json:"archive"`
+	SHA256Sum bool `json:"sha256sum"`
 }
 
 // Platforms returns the list of platforms defined in the build matrix. It
@@ -82,8 +85,13 @@ type ID struct {
 
 type Options struct {
 	ID
-	Output   string
-	Gopath   string
+
+	OutputDir  string
+	BinaryName string
+	Archive    bool
+	SHA256Sum  bool
+	Gopath     string
+
 	Ldflags  string
 	Gcflags  string
 	Asmflags string
@@ -235,9 +243,14 @@ func build(mod Module, params Params, outputDir, gopathDir string, statusCh chan
 				binaryName.WriteString(".exe")
 			}
 			buildOptions := Options{
-				ID:       buildID,
-				Output:   filepath.Join(outputDir, binaryName.String()),
-				Gopath:   gopathDir,
+				ID: buildID,
+
+				OutputDir:  outputDir,
+				BinaryName: binaryName.String(),
+				Archive:    params.Archive,
+				SHA256Sum:  params.SHA256Sum,
+				Gopath:     gopathDir,
+
 				Ldflags:  valueOrOverride(params.Ldflags, params.PlatformLdflags),
 				Gcflags:  valueOrOverride(params.Gcflags, params.PlatformGcflags),
 				Asmflags: valueOrOverride(params.Asmflags, params.PlatformAsmflags),
@@ -260,7 +273,14 @@ func build(mod Module, params Params, outputDir, gopathDir string, statusCh chan
 }
 
 func buildSingle(mod Module, opts Options) Status {
-	cmd := exec.Command("go", "build", "-o", opts.Output)
+	binaryDir := opts.OutputDir
+	if opts.Archive {
+		// if archiving binaries, emit the binaries to a separate directory -
+		// the archive will be created in the correct output directory
+		binaryDir = "/tmp"
+	}
+	binaryPath := filepath.Join(binaryDir, opts.BinaryName)
+	cmd := exec.Command("go", "build", "-o", binaryPath)
 	if opts.Rebuild {
 		cmd.Args = append(cmd.Args, "-a")
 	}
@@ -313,6 +333,38 @@ func buildSingle(mod Module, opts Options) Status {
 			Data:   err.Error(),
 		}
 	}
+
+	var outPath string
+	if opts.Archive {
+		if opts.Platform.OS == "windows" {
+			outPath = filepath.Join(opts.OutputDir, opts.BinaryName+".zip")
+			err = createZipArchive(outPath, []string{binaryPath})
+		} else {
+			outPath = filepath.Join(opts.OutputDir, opts.BinaryName+".tar.gz")
+			err = createTarGzArchive(outPath, []string{binaryPath})
+		}
+		if err != nil {
+			return Status{
+				ID:     opts.ID,
+				Status: "error",
+				Data:   err.Error(),
+			}
+		}
+	} else {
+		outPath = binaryPath
+	}
+
+	if opts.SHA256Sum {
+		err = computeSHA256Sum(outPath)
+		if err != nil {
+			return Status{
+				ID:     opts.ID,
+				Status: "error",
+				Data:   err.Error(),
+			}
+		}
+	}
+
 	return Status{
 		ID:     opts.ID,
 		Status: "success",
