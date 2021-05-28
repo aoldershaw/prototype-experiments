@@ -49,8 +49,8 @@ type Params struct {
 
 	Parallelism int `json:"parallelism"`
 
-	Archive   bool `json:"archive"`
-	SHA256Sum bool `json:"sha256sum"`
+	Archive bool   `json:"archive"`
+	SHASum  SHASum `json:"shasum"`
 }
 
 // Platforms returns the list of platforms defined in the build matrix. It
@@ -89,7 +89,7 @@ type Options struct {
 	OutputDir  string
 	BinaryName string
 	Archive    bool
-	SHA256Sum  bool
+	SHASum     SHASum
 	Gopath     string
 
 	Ldflags  string
@@ -248,7 +248,7 @@ func build(mod Module, params Params, outputDir, gopathDir string, statusCh chan
 				OutputDir:  outputDir,
 				BinaryName: binaryName.String(),
 				Archive:    params.Archive,
-				SHA256Sum:  params.SHA256Sum,
+				SHASum:     params.SHASum,
 				Gopath:     gopathDir,
 
 				Ldflags:  valueOrOverride(params.Ldflags, params.PlatformLdflags),
@@ -354,8 +354,8 @@ func buildSingle(mod Module, opts Options) Status {
 		outPath = binaryPath
 	}
 
-	if opts.SHA256Sum {
-		err = computeSHA256Sum(outPath)
+	if opts.SHASum != "" {
+		err = computeSHASum(outPath, opts.SHASum)
 		if err != nil {
 			return Status{
 				ID:     opts.ID,
